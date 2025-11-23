@@ -1,0 +1,57 @@
+#!/bin/bash
+# shokpkg-builder-zenity.sh - Builder for .shpkg packages (Bash + Zenity)
+
+TMPBUILD="/tmp/shokpkg_build"
+mkdir -p "$TMPBUILD"
+
+# --- Step 1: Package Name ---
+NAME=$(zenity --entry --title="Package Name" --text="Enter package name:")
+[ -z "$NAME" ] && exit 1
+
+# --- Step 2: Version ---
+VERSION=$(zenity --entry --title="Version" --text="Enter version:")
+[ -z "$VERSION" ] && exit 1
+
+# --- Step 3: Postinstall command (optional) ---
+POSTINSTALL=$(zenity --entry --title="Postinstall Command" --text="Optional postinstall command:")
+
+# --- Step 4: Select files ---
+FILES=()
+while true; do
+    FILE=$(zenity --file-selection --title="Select file to include (Cancel when done)" --multiple --separator="|")
+    [ -z "$FILE" ] && break
+    IFS="|" read -r -a SELECTED <<< "$FILE"
+    for f in "${SELECTED[@]}"; do
+        FILES+=("$f")
+    done
+done
+
+[ ${#FILES[@]} -eq 0 ] && zenity --error --text="No files selected" && exit 1
+
+# --- Step 5: Prepare workdir ---
+WORKDIR="$TMPBUILD/$NAME"
+rm -rf "$WORKDIR"
+mkdir -p "$WORKDIR/data/usr/local/bin"  # default install for executables
+
+# --- Step 6: Copy files ---
+for f in "${FILES[@]}"; do
+    # By default, all files are installed to /usr/local/bin
+    cp -r "$f" "$WORKDIR/data/usr/local/bin/"
+done
+
+# --- Step 7: Write control file ---
+echo "NAME=$NAME" > "$WORKDIR/control"
+echo "VERSION=$VERSION" >> "$WORKDIR/control"
+FILES_BASENAME=$(for f in "${FILES[@]}"; do basename "$f"; done | tr ' ' ' ')
+echo "FILES=\"$FILES_BASENAME\"" >> "$WORKDIR/control"
+[ ! -z "$POSTINSTALL" ] && echo "POSTINSTALL='$POSTINSTALL'" >> "$WORKDIR/control"
+
+# --- Step 8: Create data.tar.gz ---
+tar -czf "$WORKDIR/data.tar.gz" -C "$WORKDIR/data" .
+
+# --- Step 9: Create final .shpkg ---
+OUTPUT="${NAME}-${VERSION}.shpkg"
+tar -czf "$OUTPUT" -C "$WORKDIR" control data.tar.gz
+
+zenity --info --text="Package created: $OUTPUT\nExecutables will be installed to /usr/local/bin by default."
+

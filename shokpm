@@ -1,0 +1,207 @@
+#!/bin/sh
+
+DB="/var/lib/shokpm/db"
+TMP="/var/lib/shokpm/tmp"
+
+mkdir -p "$DB" "$TMP"
+
+extract_control() {
+    pkg="$1"
+    work="$TMP/$(basename "$pkg" .shpkg)_work"
+    rm -rf "$work"
+    mkdir -p "$work"
+    tar -xf "$pkg" -C "$work" || return 1
+    . "$work/control"
+}
+
+install_pkg() {
+    pkg="$1"
+
+    echo "[*] Installing $pkg ..."
+    extract_control "$pkg" || { echo "Failed to read package"; exit 1; }
+
+    echo " - Name: $NAME"
+    echo " - Version: $VERSION"
+
+    tar -xzf "$TMP/$(basename "$pkg" .shpkg)_work/data.tar.gz" -C / || {
+        echo "Extraction failed"
+        exit 1
+    }
+
+    meta="$DB/$NAME"
+    echo "NAME=$NAME" > "$meta"
+    echo "VERSION=$VERSION" >> "$meta"
+
+    # gotta catch em all!
+    FILEPATHS=""
+    for f in $FILES; do
+        FILEPATHS="$FILEPATHS /usr/local/bin/$f"
+    done
+    echo "FILES=\"$FILEPATHS\"" >> "$meta"
+
+    [ ! -z "$POSTINSTALL" ] && sh -c "$POSTINSTALL"
+
+    echo "[+] Installed $NAME"
+}
+
+
+remove_pkg() {
+    pkg="$1"
+    meta="$DB/$pkg"
+
+    [ ! -f "$meta" ] && { echo "Package not installed"; exit 1; }
+
+    echo "[*] Removing $pkg ..."
+    . "$meta"
+
+    for f in $FILES; do
+        [ -e "$f" ] && rm -f "$f"
+    done
+
+    rm -f "$meta"
+    echo "[+] Removed $pkg"
+}
+
+
+list_pkgs() {
+    found=0
+    for f in "$DB"/*; do
+        [ -e "$f" ] || continue
+        . "$f"
+        echo "$NAME $VERSION"
+        found=1
+    done
+    [ $found -eq 0 ] && echo "No packages installed."
+}
+
+download_latest_version_line() {
+    pkg="$1"
+
+    for repo in $(cat /etc/shokpm/repos 2>/dev/null); do
+        index_url="${repo%/}/index"
+        index_tmp="$TMP/index_$$"
+        if curl -fsSL "$index_url" -o "$index_tmp"; then
+            line=$(grep "^$pkg " "$index_tmp" | head -n1)
+            [ ! -z "$line" ] && { echo "$line"; return 0; }
+        fi
+    done
+    return 1
+}
+
+download_pkg() {
+    pkgname="$1"
+
+    for repo in $(cat /etc/shokpm/repos 2>/dev/null); do
+        index_url="${repo%/}/index"
+        index_tmp="$TMP/index_$$"
+
+        # shush index!
+        if curl -fsSL "$index_url" -o "$index_tmp"; then
+            line=$(grep "^$pkgname " "$index_tmp" | head -n1)
+            if [ ! -z "$line" ]; then
+                set -- $line
+                file=$3
+                url="${repo%/}/$file"
+                dst="$TMP/$file"
+
+                # log
+                echo "[*] Downloading $url ..." >&2
+
+                # real shushing power here.
+                if ! curl -fsSL "$url" -o "$dst"; then
+                    echo "Download failed" >&2
+                    return 1
+                fi
+
+                # only path or it will go BLEH BLEH.
+                printf "%s" "$dst"
+                return 0
+            fi
+        fi
+    done
+
+    return 1
+}
+
+
+check_updates() {
+    echo "[*] Checking for updates..."
+    for meta in "$DB"/*; do
+        [ -e "$meta" ] || continue
+        . "$meta"
+        latest=$(download_latest_version_line "$NAME")
+        [ -z "$latest" ] && continue
+        set -- $latest
+        repo_version=$2
+        if [ "$repo_version" != "$VERSION" ]; then
+            echo " - $NAME: installed $VERSION → available $repo_version"
+        fi
+    done
+}
+
+upgrade_pkg() {
+    pkg="$1"
+    meta="$DB/$pkg"
+    [ ! -f "$meta" ] && { echo "$pkg not installed"; exit 1; }
+
+    . "$meta"
+    latest_line=$(download_latest_version_line "$pkg")
+    [ -z "$latest_line" ] && { echo "No upgrade available"; return; }
+
+    set -- $latest_line
+    latest_version=$2
+    file=$3
+
+    if [ "$latest_version" = "$VERSION" ]; then
+        echo "$pkg is already up to date."
+        return
+    fi
+
+    echo "[*] Upgrading $pkg → $latest_version ..."
+    pkgfile=$(download_pkg "$2")
+    pkgfile=$(echo "$pkgfile" | tr -d '\r\n')
+    [ -z "$pkgfile" ] && { echo "Package not found in repos"; exit 1; }
+    install_pkg "$pkgfile"
+
+}
+
+search_pkg() {
+    query="$1"
+    for repo in $(cat /etc/shokpm/repos 2>/dev/null); do
+        index_url="${repo%/}/index"
+        index_tmp="$TMP/index_$$"
+        curl -fsSL "$index_url" -o "$index_tmp" || continue
+        grep "$query" "$index_tmp"
+    done
+}
+
+usage() {
+    echo "shokpm - Shokik Package Manager"
+    echo "Usage:"
+    echo "  shokpm install <file.shpkg|name>"
+    echo "  shokpm remove <name>"
+    echo "  shokpm list"
+    echo "  shokpm search <name>"
+    echo "  shokpm update"
+    echo "  shokpm upgrade <name>"
+}
+
+case "$1" in
+    install)
+        if [ -z "$2" ]; then usage; exit 1; fi
+        if [ -f "$2" ]; then
+            install_pkg "$2"
+        else
+            pkgfile=$(download_pkg "$2")
+            [ -z "$pkgfile" ] && { echo "Package not found in repos"; exit 1; }
+            install_pkg "$pkgfile"
+        fi
+        ;;
+    remove) [ -z "$2" ] && usage || remove_pkg "$2" ;;
+    list) list_pkgs ;;
+    search) [ -z "$2" ] && usage || search_pkg "$2" ;;
+    update) check_updates ;;
+    upgrade) [ -z "$2" ] && usage || upgrade_pkg "$2" ;;
+    *) usage ;;
+esac
+
