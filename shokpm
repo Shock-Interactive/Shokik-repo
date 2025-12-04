@@ -7,12 +7,26 @@ mkdir -p "$DB" "$TMP"
 
 extract_control() {
     pkg="$1"
-    work="$TMP/$(basename "$pkg" .shpkg)_work"
+    work="$TMP/$(basename "$pkg")_work"
+
     rm -rf "$work"
     mkdir -p "$work"
+
+    # Extract package
     tar -xf "$pkg" -C "$work" || return 1
-    . "$work/control"
+
+    # Find control file anywhere in the extracted tree
+    control_path=$(find "$work" -type f -name control | head -n1)
+
+    if [ -z "$control_path" ]; then
+        echo "[!] control file not found inside package"
+        return 1
+    fi
+
+    # Load the control file
+    . "$control_path"
 }
+
 
 download_and_extract_source() {
     url="$1"
