@@ -14,6 +14,74 @@ extract_control() {
     . "$work/control"
 }
 
+download_and_extract_source() {
+    url="$1"
+    workdir="$2"
+
+    archive="$TMP/src_$(basename "$url")"
+    echo "[*] Downloading source $url ..."
+    curl -fsSL "$url" -o "$archive" || return 1
+
+    echo "[*] Extracting source archive..."
+    mkdir -p "$workdir/src"
+    case "$archive" in
+        *.tar.gz|*.tgz)
+            tar -xzf "$archive" -C "$workdir/src" ;;
+        *.tar.xz)
+            tar -xJf "$archive" -C "$workdir/src" ;;
+        *.tar)
+            tar -xf "$archive" -C "$workdir/src" ;;   # <-- NEW
+        *)
+            echo "Unsupported archive format"; return 1 ;;
+    esac
+}
+
+detect_pkg_manager() {
+    if command -v dnf >/dev/null 2>&1; then
+        echo "dnf"
+    elif command -v yum >/dev/null 2>&1; then
+        echo "yum"
+    elif command -v apt-get >/dev/null 2>&1; then
+        echo "apt-get"
+    elif command -v apt >/dev/null 2>&1; then
+        echo "apt"
+    elif command -v pacman >/dev/null 2>&1; then
+        echo "pacman"
+    elif command -v zypper >/dev/null 2>&1; then
+        echo "zypper"
+    elif command -v apk >/dev/null 2>&1; then
+        echo "apk"
+    else
+        echo ""
+    fi
+}
+
+auto_install_build_deps() {
+    pkgmgr=$(detect_pkg_manager)
+
+    if [ -z "$pkgmgr" ]; then
+        echo "[!] No supported system package manager found."
+        echo "    Supported: dnf, yum, apt(-get), pacman, zypper, apk"
+        exit 1
+    fi
+
+    echo "[*] Detected package manager: $pkgmgr"
+    
+    for dep in $BUILDDEPS; do
+        echo "[*] Installing build dependency: $dep"
+
+        case "$pkgmgr" in
+            dnf)     sudo dnf install -y "$dep" ;;
+            yum)     sudo yum install -y "$dep" ;;
+            apt-get) sudo apt-get install -y "$dep" ;;
+            apt)     sudo apt install -y "$dep" ;;
+            pacman)  sudo pacman -Sy --noconfirm "$dep" ;;
+            zypper)  sudo zypper install -y "$dep" ;;
+            apk)     sudo apk add "$dep" ;;
+        esac
+    done
+}
+
 install_pkg() {
     pkg="$1"
 
