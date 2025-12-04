@@ -23,16 +23,49 @@ install_pkg() {
     echo " - Name: $NAME"
     echo " - Version: $VERSION"
 
-    tar -xzf "$TMP/$(basename "$pkg" .shpkg)_work/data.tar.gz" -C / || {
-        echo "Extraction failed"
-        exit 1
-    }
+    work="$TMP/$(basename "$pkg" .shpkg)_work"
 
+    # --- NEW: Build from source if available ---
+    if [ ! -z "$BUILDSOURCE" ]; then
+        echo "[*] Source build enabled"
+        auto_install_build_deps
+
+        download_and_extract_source "$BUILDSOURCE" "$work" || {
+            echo "Failed to download source"; exit 1;
+        }
+
+        srcdir=$(find "$work/src" -mindepth 1 -maxdepth 1 -type d | head -n1)
+        [ -z "$srcdir" ] && { echo "Could not find extracted source directory"; exit 1; }
+
+        echo "[*] Building in $srcdir"
+
+        cd "$srcdir" || exit 1
+
+        if [ ! -z "$BUILDCMD" ]; then
+            sh -c "$BUILDCMD" || { echo "Build command failed"; exit 1; }
+        else
+            [ -f ./configure ] && ./configure || true
+            make || { echo "make failed"; exit 1; }
+        fi
+
+        echo "[*] Installing..."
+        make install || { echo "Install failed"; exit 1; }
+
+        cd / || exit 1
+    else
+        # --- OLD BEHAVIOR: Install the compiled data.tar.gz ---
+        tar -xzf "$work/data.tar.gz" -C / || {
+            echo "Extraction failed"
+            exit 1
+        }
+    fi
+
+    # --- metadata ---
     meta="$DB/$NAME"
     echo "NAME=$NAME" > "$meta"
     echo "VERSION=$VERSION" >> "$meta"
 
-    # gotta catch em all!
+    # File tracking
     FILEPATHS=""
     for f in $FILES; do
         FILEPATHS="$FILEPATHS /usr/local/bin/$f"
@@ -42,8 +75,10 @@ install_pkg() {
     [ ! -z "$POSTINSTALL" ] && sh -c "$POSTINSTALL"
 
     echo "[+] Installed $NAME"
-}
 
+    # cleanup
+    rm -rf "$work"
+}
 
 remove_pkg() {
     pkg="$1"
